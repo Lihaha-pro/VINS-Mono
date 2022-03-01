@@ -19,5 +19,9 @@
         <param name="skip_cnt" type="int" value="0" />
         <param name="skip_dis" type="double" value="0" />
     </node>
-
+    <!--以下打开了rviz可视化窗口-->
+    <!-- <include file="$(find vins_estimator)/launch/vins_rviz.launch"/> -->
+    <node name="rvizvisualisation" pkg="rviz" type="rviz" output="log" args="-d $(find vins_estimator)/../config/vins_rviz_config.rviz" />
+    <!--以下直接读取bag波包-->
+    <node pkg="rosbag" type = "play" name = "play" args="/home/llh/DataSet/EuRoC/MH_01_easy.bag" output="screen"/>
 </launch>
