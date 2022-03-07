@@ -4,7 +4,7 @@ std::string IMAGE_TOPIC;
 std::string IMU_TOPIC;
 std::vector<std::string> CAM_NAMES;
 std::string FISHEYE_MASK;
-int MAX_CNT;
+int MAX_CNT; //一张图片特征点最大数量 150
 int MIN_DIST;
 int WINDOW_SIZE;
 int FREQ;
@@ -14,7 +14,7 @@ int STEREO_TRACK;
 int EQUALIZE;
 int ROW;
 int COL;
-int FOCAL_LENGTH;
+int FOCAL_LENGTH; //虚拟焦距 460
 int FISHEYE;
 bool PUB_THIS_FRAME;
 
@@ -37,7 +37,7 @@ T readParam(ros::NodeHandle &n, std::string name)
 void readParameters(ros::NodeHandle &n)
 {
     std::string config_file;
-    config_file = readParam<std::string>(n, "config_file");
+    config_file = readParam<std::string>(n, "config_file"); //读取launch文件中的config_file路径
     cv::FileStorage fsSettings(config_file, cv::FileStorage::READ);
     if(!fsSettings.isOpened())
     {
@@ -47,14 +47,14 @@ void readParameters(ros::NodeHandle &n)
 
     fsSettings["image_topic"] >> IMAGE_TOPIC;
     fsSettings["imu_topic"] >> IMU_TOPIC;
-    MAX_CNT = fsSettings["max_cnt"];
-    MIN_DIST = fsSettings["min_dist"];
+    MAX_CNT = fsSettings["max_cnt"];    //单帧图片最大特征点数目 150
+    MIN_DIST = fsSettings["min_dist"];  //特征点之间最短的像素距离 30
     ROW = fsSettings["image_height"];
     COL = fsSettings["image_width"];
     FREQ = fsSettings["freq"];
-    F_THRESHOLD = fsSettings["F_threshold"];
+    F_THRESHOLD = fsSettings["F_threshold"]; //求解对极约束ransac求解的inlier门限值
     SHOW_TRACK = fsSettings["show_track"];
-    EQUALIZE = fsSettings["equalize"];
+    EQUALIZE = fsSettings["equalize"]; //是否做图像均衡化处理
     FISHEYE = fsSettings["fisheye"];
     if (FISHEYE == 1)
         FISHEYE_MASK = VINS_FOLDER_PATH + "config/fisheye_mask.jpg";

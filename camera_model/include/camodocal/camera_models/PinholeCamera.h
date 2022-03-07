@@ -136,7 +136,7 @@ private:
     Parameters mParameters;
 
     double m_inv_K11, m_inv_K13, m_inv_K22, m_inv_K23;
-    bool m_noDistortion;
+    bool m_noDistortion; //相机是否带畸变（根据配置文件中的畸变参数判断得到）
 };
 
 typedef boost::shared_ptr<PinholeCamera> PinholeCameraPtr;

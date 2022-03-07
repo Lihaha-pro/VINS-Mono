@@ -441,7 +441,7 @@ PinholeCamera::liftSphere(const Eigen::Vector2d& p, Eigen::Vector3d& P) const
 }
 
 /**
- * \brief Lifts a point from the image plane to its projective ray
+ * \brief Lifts a point from the image plane to its projective ray，同时进行了去畸变（逐次逼近去畸变）
  *
  * \param p image coordinates
  * \param P coordinates of the projective ray
@@ -454,6 +454,7 @@ PinholeCamera::liftProjective(const Eigen::Vector2d& p, Eigen::Vector3d& P) cons
     //double lambda;
 
     // Lift points to normalised plane
+    //投影到归一化相机坐标系
     mx_d = m_inv_K11 * p(0) + m_inv_K13;
     my_d = m_inv_K22 * p(1) + m_inv_K23;
 
@@ -651,7 +652,7 @@ PinholeCamera::distortion(const Eigen::Vector2d& p_u, Eigen::Vector2d& d_u) cons
     double p2 = mParameters.p2();
 
     double mx2_u, my2_u, mxy_u, rho2_u, rad_dist_u;
-
+    //利用畸变公式计算逐次逼近的变化量
     mx2_u = p_u(0) * p_u(0);
     my2_u = p_u(1) * p_u(1);
     mxy_u = p_u(0) * p_u(1);

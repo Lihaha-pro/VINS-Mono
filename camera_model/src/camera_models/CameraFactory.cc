@@ -85,7 +85,12 @@ CameraFactory::generateCamera(Camera::ModelType modelType,
     }
     }
 }
-
+/**
+ * @brief 根据配置文件得到相机参数，包括畸变和内参，同时返回带有参数信息的类CameraPtr
+ * 
+ * @param filename 
+ * @return CameraPtr 
+ */
 CameraPtr
 CameraFactory::generateCameraFromYamlFile(const std::string& filename)
 {
@@ -97,6 +102,8 @@ CameraFactory::generateCameraFromYamlFile(const std::string& filename)
     }
 
     Camera::ModelType modelType = Camera::MEI;
+    // 获取相机类别
+    
     if (!fs["model_type"].isNone())
     {
         std::string sModelType;
@@ -140,8 +147,8 @@ CameraFactory::generateCameraFromYamlFile(const std::string& filename)
     {
         PinholeCameraPtr camera(new PinholeCamera);
 
-        PinholeCamera::Parameters params = camera->getParameters();
-        params.readFromYamlFile(filename);
+        PinholeCamera::Parameters params = camera->getParameters();//通过引用取到相机的参数（此时是为了写入）
+        params.readFromYamlFile(filename); //读取配置文件
         camera->setParameters(params);
         return camera;
     }

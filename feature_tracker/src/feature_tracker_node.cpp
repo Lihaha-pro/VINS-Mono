@@ -1,3 +1,6 @@
+/**
+ * 该文件是特征提取的主入口，负责一个特征提取节点的功能
+ */
 #include <ros/ros.h>
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/image_encodings.h>
@@ -35,6 +38,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         return;
     }
     // detect unstable camera stream
+    // 检查时间戳是否正常，认为超过一秒或者错乱就异常
     if (img_msg->header.stamp.toSec() - last_image_time > 1.0 || img_msg->header.stamp.toSec() < last_image_time)
     {
         ROS_WARN("image discontinue! reset the feature tracker!");
@@ -43,12 +47,13 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         pub_count = 1;
         std_msgs::Bool restart_flag;
         restart_flag.data = true;
-        pub_restart.publish(restart_flag);
+        pub_restart.publish(restart_flag);//发送重启指令
         return;
     }
     last_image_time = img_msg->header.stamp.toSec();
     // frequency control
-    if (round(1.0 * pub_count / (img_msg->header.stamp.toSec() - first_image_time)) <= FREQ)
+    // 控制发送到后端的频率
+    if (round(1.0 * pub_count / (img_msg->header.stamp.toSec() - first_image_time)) <= FREQ)//送给后端频率不超过10Hz
     {
         PUB_THIS_FRAME = true;
         // reset the frequency control
@@ -60,7 +65,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     }
     else
         PUB_THIS_FRAME = false;
-
+    //读取图像，最终使用cv::Mat show_img接收输入的图片
     cv_bridge::CvImageConstPtr ptr;
     if (img_msg->encoding == "8UC1")
     {
@@ -76,7 +81,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     }
     else
         ptr = cv_bridge::toCvCopy(img_msg, sensor_msgs::image_encodings::MONO8);
-
+    //show_img保存输入的图片
     cv::Mat show_img = ptr->image;
     TicToc t_r;
     for (int i = 0; i < NUM_OF_CAM; i++)
@@ -126,13 +131,13 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         vector<set<int>> hash_ids(NUM_OF_CAM);
         for (int i = 0; i < NUM_OF_CAM; i++)
         {
-            auto &un_pts = trackerData[i].cur_un_pts;
-            auto &cur_pts = trackerData[i].cur_pts;
+            auto &un_pts = trackerData[i].cur_un_pts;   //去畸变的归一化相机坐标系坐标
+            auto &cur_pts = trackerData[i].cur_pts;     //原始像素坐标
             auto &ids = trackerData[i].ids;
             auto &pts_velocity = trackerData[i].pts_velocity;
             for (unsigned int j = 0; j < ids.size(); j++)
             {
-                if (trackerData[i].track_cnt[j] > 1)
+                if (trackerData[i].track_cnt[j] > 1)//观察次数大于1才会发布，不然没法构建三角约束
                 {
                     int p_id = ids[j];
                     hash_ids[i].insert(p_id);
@@ -162,7 +167,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
             init_pub = 1;
         }
         else
-            pub_img.publish(feature_points);
+            pub_img.publish(feature_points);//前端得到的信息通过publisher发布出去
 
         if (SHOW_TRACK)
         {
@@ -205,13 +210,14 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "feature_tracker");
-    ros::NodeHandle n("~");
+    ros::init(argc, argv, "feature_tracker");   //ros节点初始化
+    ros::NodeHandle n("~");                     //设置句柄
+    //设置logger级别
     ros::console::set_logger_level(ROSCONSOLE_DEFAULT_NAME, ros::console::levels::Info);
-    readParameters(n);
+    readParameters(n); //读取配置文件
 
     for (int i = 0; i < NUM_OF_CAM; i++)
-        trackerData[i].readIntrinsicParameter(CAM_NAMES[i]);
+        trackerData[i].readIntrinsicParameter(CAM_NAMES[i]);//获得相机的内参
 
     if(FISHEYE)
     {
@@ -229,15 +235,16 @@ int main(int argc, char **argv)
     }
 
     ros::Subscriber sub_img = n.subscribe(IMAGE_TOPIC, 100, img_callback);
-
-    pub_img = n.advertise<sensor_msgs::PointCloud>("feature", 1000);
-    pub_match = n.advertise<sensor_msgs::Image>("feature_img",1000);
-    pub_restart = n.advertise<std_msgs::Bool>("restart",1000);
+    //这里是发布了这三个话题，并且消息类型为<>内的类型
+    pub_img = n.advertise<sensor_msgs::PointCloud>("feature", 1000);    //跟踪的特征点图像，主要是之后给RVIZ用和调试用
+    //↑由于之前定义了句柄，所以实际发出去的应该是/feature_tracker/feature
+    pub_match = n.advertise<sensor_msgs::Image>("feature_img",1000);    //即跟踪的特征点信息，由/vins_estimator订阅并进行优化 
+    pub_restart = n.advertise<std_msgs::Bool>("restart",1000);          //判断特征跟踪模块是否出错，若有问题则进行复位，由/vins_estimator订阅
     /*
     if (SHOW_TRACK)
         cv::namedWindow("vis", cv::WINDOW_NORMAL);
     */
-    ros::spin();
+    ros::spin(); //spin代表这个节点循环查询topic是否接收
     return 0;
 }
 
