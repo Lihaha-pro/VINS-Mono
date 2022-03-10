@@ -41,41 +41,57 @@ int FeatureManager::getFeatureCount()
     return cnt;
 }
 
-
+/**
+ * @brief 更新特征点管理器，同时返回是否认为是关键帧
+ * 
+ * @param frame_count 
+ * @param image 
+ * @param td 
+ * @return true 
+ * @return false 
+ */
 bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, double td)
 {
     ROS_DEBUG("input feature: %d", (int)image.size());
     ROS_DEBUG("num of feature: %d", getFeatureCount());
     double parallax_sum = 0;
-    int parallax_num = 0;
-    last_track_num = 0;
+    int parallax_num = 0;   //特征点同时被倒数第二帧和倒数第三帧看到的数量
+    last_track_num = 0;     //追踪到上一帧特征点的数目
+    //遍历每个特征点
     for (auto &id_pts : image)
     {
+        //!用特征点信息构造一个对象，是某特征点在各个帧中的属性
         FeaturePerFrame f_per_fra(id_pts.second[0].second, td);
 
-        int feature_id = id_pts.first;
+        int feature_id = id_pts.first;//该特征点id
+        //在已有的id中寻找是否有相同的特征点
         auto it = find_if(feature.begin(), feature.end(), [feature_id](const FeaturePerId &it)
                           {
             return it.feature_id == feature_id;
                           });
-
+        //认为是新的特征点
         if (it == feature.end())
         {
+            //!创建一个新的特征点放入特征点管理器feature中，传入了特征点的id，这里的frame_count是特征点在滑窗中的位置，作为特征点的起始位置
             feature.push_back(FeaturePerId(feature_id, frame_count));
+            //送入之前那个创建的FeaturePerFrame对象
             feature.back().feature_per_frame.push_back(f_per_fra);
         }
+        //如果已经有相同的一个特征点，在对应的“组织”下增加一个帧属性
         else if (it->feature_id == feature_id)
         {
             it->feature_per_frame.push_back(f_per_fra);
             last_track_num++;
         }
     }
-
+    //判断是否是关键帧，是的条件：是前两帧图片，或者跟踪较弱（追踪到上一帧特征点数少于20了）
     if (frame_count < 2 || last_track_num < 20)
         return true;
-
+    //!我们这里的判断是判断倒数第二帧是不是关键帧，而不是当前帧
     for (auto &it_per_id : feature)
     {
+        //此处要进行一个简单的视差计算，因此要求特征点至少被前边的两帧观测到
+        //起始帧至少是倒数第三帧，其至少覆盖到倒数第二帧（反正结果是倒数第二帧和第三帧都观测到了，前边的描述个人感觉有点奇怪）
         if (it_per_id.start_frame <= frame_count - 2 &&
             it_per_id.start_frame + int(it_per_id.feature_per_frame.size()) - 1 >= frame_count - 1)
         {
@@ -92,7 +108,7 @@ bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vec
     {
         ROS_DEBUG("parallax_sum: %lf, parallax_num: %d", parallax_sum, parallax_num);
         ROS_DEBUG("current parallax: %lf", parallax_sum / parallax_num * FOCAL_LENGTH);
-        return parallax_sum / parallax_num >= MIN_PARALLAX;
+        return parallax_sum / parallax_num >= MIN_PARALLAX;//根据前两帧视差判断上一帧是否是关键帧
     }
 }
 
@@ -116,12 +132,19 @@ void FeatureManager::debugShow()
         ROS_ASSERT(it.used_num == sum);
     }
 }
-
+/**
+ * @brief 得到同时被frame_count_l和frame_count_r帧看到的特征点各自的坐标
+ * 
+ * @param frame_count_l 
+ * @param frame_count_r 
+ * @return vector<pair<Vector3d, Vector3d>> corres 返回两帧匹配好的特征点对
+ */
 vector<pair<Vector3d, Vector3d>> FeatureManager::getCorresponding(int frame_count_l, int frame_count_r)
 {
     vector<pair<Vector3d, Vector3d>> corres;
     for (auto &it : feature)
     {
+        //保证需要的特征点呗两帧都观测到
         if (it.start_frame <= frame_count_l && it.endFrame() >= frame_count_r)
         {
             Vector3d a = Vector3d::Zero(), b = Vector3d::Zero();
@@ -356,6 +379,7 @@ double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int f
 {
     //check the second last frame is keyframe or not
     //parallax betwwen seconde last frame and third last frame
+    //找到相邻两帧，取出保存的帧信息
     const FeaturePerFrame &frame_i = it_per_id.feature_per_frame[frame_count - 2 - it_per_id.start_frame];
     const FeaturePerFrame &frame_j = it_per_id.feature_per_frame[frame_count - 1 - it_per_id.start_frame];
 
@@ -375,13 +399,14 @@ double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int f
     double dep_i = p_i(2);
     double u_i = p_i(0) / dep_i;
     double v_i = p_i(1) / dep_i;
-    double du = u_i - u_j, dv = v_i - v_j;
-
+    double du = u_i - u_j, dv = v_i - v_j;//归一化相机坐标系的坐标差
+    //由于是归一化坐标，所以下边的计算和上边是一样的
     double dep_i_comp = p_i_comp(2);
     double u_i_comp = p_i_comp(0) / dep_i_comp;
     double v_i_comp = p_i_comp(1) / dep_i_comp;
     double du_comp = u_i_comp - u_j, dv_comp = v_i_comp - v_j;
 
+    //计算归一化坐标系的坐标距离
     ans = max(ans, sqrt(min(du * du + dv * dv, du_comp * du_comp + dv_comp * dv_comp)));
 
     return ans;

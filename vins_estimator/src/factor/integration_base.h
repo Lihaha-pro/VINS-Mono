@@ -26,9 +26,16 @@ class IntegrationBase
         noise.block<3, 3>(12, 12) =  (ACC_W * ACC_W) * Eigen::Matrix3d::Identity();
         noise.block<3, 3>(15, 15) =  (GYR_W * GYR_W) * Eigen::Matrix3d::Identity();
     }
-
+    /**
+     * @brief 最终实现计算预积分量，更新协方差矩阵
+     * 
+     * @param dt 
+     * @param acc 
+     * @param gyr 
+     */
     void push_back(double dt, const Eigen::Vector3d &acc, const Eigen::Vector3d &gyr)
     {
+        //相关时间差和传感器数据保留，方便后续repropagate
         dt_buf.push_back(dt);
         acc_buf.push_back(acc);
         gyr_buf.push_back(gyr);
@@ -50,7 +57,26 @@ class IntegrationBase
         for (int i = 0; i < static_cast<int>(dt_buf.size()); i++)
             propagate(dt_buf[i], acc_buf[i], gyr_buf[i]);
     }
-
+    /**
+     * @brief 中值积分函数
+     * 
+     * @param _dt 
+     * @param _acc_0 
+     * @param _gyr_0 
+     * @param _acc_1 
+     * @param _gyr_1 
+     * @param delta_p 
+     * @param delta_q 
+     * @param delta_v 
+     * @param linearized_ba 
+     * @param linearized_bg 
+     * @param result_delta_p 
+     * @param result_delta_q 
+     * @param result_delta_v 
+     * @param result_linearized_ba 
+     * @param result_linearized_bg 
+     * @param update_jacobian 是否更新Jacobian矩阵
+     */
     void midPointIntegration(double _dt, 
                             const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
                             const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1,
@@ -60,11 +86,12 @@ class IntegrationBase
                             Eigen::Vector3d &result_linearized_ba, Eigen::Vector3d &result_linearized_bg, bool update_jacobian)
     {
         //ROS_INFO("midpoint integration");
+        //首先中值积分更新状态量
         Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);
         Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
         result_delta_q = delta_q * Quaterniond(1, un_gyr(0) * _dt / 2, un_gyr(1) * _dt / 2, un_gyr(2) * _dt / 2);
         Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);
-        Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
+        Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);//利用转换到第k帧图像坐标系下的两个acc值求平均，作为计算用的acc值
         result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;
         result_delta_v = delta_v + un_acc * _dt;
         result_linearized_ba = linearized_ba;
@@ -75,8 +102,8 @@ class IntegrationBase
             Vector3d w_x = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
             Vector3d a_0_x = _acc_0 - linearized_ba;
             Vector3d a_1_x = _acc_1 - linearized_ba;
-            Matrix3d R_w_x, R_a_0_x, R_a_1_x;
-
+            Matrix3d R_w_x, R_a_0_x, R_a_1_x;//三个反对称矩阵
+            //赋值反对称矩阵，方便后续计算
             R_w_x<<0, -w_x(2), w_x(1),
                 w_x(2), 0, -w_x(0),
                 -w_x(1), w_x(0), 0;
@@ -86,7 +113,7 @@ class IntegrationBase
             R_a_1_x<<0, -a_1_x(2), a_1_x(1),
                 a_1_x(2), 0, -a_1_x(0),
                 -a_1_x(1), a_1_x(0), 0;
-
+            //计算F矩阵，利用那个最复杂的公式
             MatrixXd F = MatrixXd::Zero(15, 15);
             F.block<3, 3>(0, 0) = Matrix3d::Identity();
             F.block<3, 3>(0, 3) = -0.25 * delta_q.toRotationMatrix() * R_a_0_x * _dt * _dt + 
@@ -104,7 +131,7 @@ class IntegrationBase
             F.block<3, 3>(9, 9) = Matrix3d::Identity();
             F.block<3, 3>(12, 12) = Matrix3d::Identity();
             //cout<<"A"<<endl<<A<<endl;
-
+            //计算V矩阵
             MatrixXd V = MatrixXd::Zero(15,18);
             V.block<3, 3>(0, 0) =  0.25 * delta_q.toRotationMatrix() * _dt * _dt;
             V.block<3, 3>(0, 3) =  0.25 * -result_delta_q.toRotationMatrix() * R_a_1_x  * _dt * _dt * 0.5 * _dt;
@@ -121,12 +148,13 @@ class IntegrationBase
 
             //step_jacobian = F;
             //step_V = V;
+            //更新Jacobian矩阵和Covariance矩阵
             jacobian = F * jacobian;
             covariance = F * covariance * F.transpose() + V * noise * V.transpose();
         }
 
     }
-
+    //准备进行中值积分，最终实现计算预积分量，更新协方差矩阵
     void propagate(double _dt, const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1)
     {
         dt = _dt;

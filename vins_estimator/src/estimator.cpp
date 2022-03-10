@@ -13,7 +13,8 @@ void Estimator::setParameter()
         tic[i] = TIC[i];
         ric[i] = RIC[i];
     }
-    f_manager.setRic(ric);
+    f_manager.setRic(ric);//平移外参设置给特征点管理器
+    //使用了虚拟相机，重投影精度（提取特征点精度）设置为1.5个像素
     ProjectionFactor::sqrt_info = FOCAL_LENGTH / 1.5 * Matrix2d::Identity();
     ProjectionTdFactor::sqrt_info = FOCAL_LENGTH / 1.5 * Matrix2d::Identity();
     td = TD;
@@ -80,7 +81,13 @@ void Estimator::clearState()
     drift_correct_r = Matrix3d::Identity();
     drift_correct_t = Vector3d::Zero();
 }
-
+/**
+ * @brief 处理Image IMU数据组中一个imu数据时调用：对imu数据进行处理，包括更新预积分量，提供优化状态量的初值
+ * 
+ * @param dt 
+ * @param linear_acceleration 
+ * @param angular_velocity 
+ */
 void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const Vector3d &angular_velocity)
 {
     if (!first_imu)
@@ -89,21 +96,22 @@ void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const
         acc_0 = linear_acceleration;
         gyr_0 = angular_velocity;
     }
-
+    //滑窗中保留11帧，frame_count表示现在正在处理第几帧，最大就到11了（另外，实际上11帧形成了10个帧间约束，这也是为什么第一帧图像前的imu数据没有用）
     if (!pre_integrations[frame_count])
     {
         pre_integrations[frame_count] = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};
     }
     if (frame_count != 0)
     {
-        pre_integrations[frame_count]->push_back(dt, linear_acceleration, angular_velocity);
+        pre_integrations[frame_count]->push_back(dt, linear_acceleration, angular_velocity);//通过该函数进入预积分部分
         //if(solver_flag != NON_LINEAR)
-            tmp_pre_integration->push_back(dt, linear_acceleration, angular_velocity);
-
+            tmp_pre_integration->push_back(dt, linear_acceleration, angular_velocity);//初始化使用
+        //保存传感器数据
         dt_buf[frame_count].push_back(dt);
         linear_acceleration_buf[frame_count].push_back(linear_acceleration);
         angular_velocity_buf[frame_count].push_back(angular_velocity);
-
+        //!利用IMU数据，作为优化初值
+        //有一个中值积分，更新滑窗中状态量，本质是给非线性优化提供可信的初始值（计算方法和之前pub出去IMU数据一样）
         int j = frame_count;         
         Vector3d un_acc_0 = Rs[j] * (acc_0 - Bas[j]) - g;
         Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - Bgs[j];
@@ -116,14 +124,22 @@ void Estimator::processIMU(double dt, const Vector3d &linear_acceleration, const
     acc_0 = linear_acceleration;
     gyr_0 = angular_velocity;
 }
-
+/**
+ * @brief 
+ * 
+ * @param image 传入的当前图片特征点信息
+ * @param header 图片数据header，主要目的是获得时间戳
+ */
 void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const std_msgs::Header &header)
 {
     ROS_DEBUG("new image coming ------------------------------------------");
     ROS_DEBUG("Adding feature points %lu", image.size());
+    //Step 1 将特征点信息加到f_manager这个特征点管理器中，同时进行是否是关键帧的检查
     if (f_manager.addFeatureCheckParallax(frame_count, image, td))
+        //如果上一帧是关键帧，则去掉滑窗中最老的帧
         marginalization_flag = MARGIN_OLD;
     else
+        //如果上一帧不是关键帧，就移除滑窗中的上一帧
         marginalization_flag = MARGIN_SECOND_NEW;
 
     ROS_DEBUG("this frame is--------------------%s", marginalization_flag ? "reject" : "accept");
@@ -132,12 +148,16 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
     ROS_DEBUG("number of feature: %d", f_manager.getFeatureCount());
     Headers[frame_count] = header;
 
-    ImageFrame imageframe(image, header.stamp.toSec());
+    //all_image_frame用来做初始化相关操作，他保留滑窗起始到当前的所有帧
+    //初始化时不会margin掉任何一帧，即使被标记
+    //这里是将光流结果和预积分结果送入imageframe管理
+    ImageFrame imageframe(image, header.stamp.toSec());//图像帧对象
     imageframe.pre_integration = tmp_pre_integration;
-    all_image_frame.insert(make_pair(header.stamp.toSec(), imageframe));
-    tmp_pre_integration = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};
+    all_image_frame.insert(make_pair(header.stamp.toSec(), imageframe));//包含了所有的imageframe，用来实现初始化
+    tmp_pre_integration = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};//重新初始化预积分量
 
-    if(ESTIMATE_EXTRINSIC == 2)
+    //Step 2 外参初始化
+    if(ESTIMATE_EXTRINSIC == 2)//没有任何先验信息
     {
         ROS_INFO("calibrating extrinsic param, rotation movement is needed");
         if (frame_count != 0)
@@ -157,9 +177,11 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
 
     if (solver_flag == INITIAL)
     {
-        if (frame_count == WINDOW_SIZE)
+        if (frame_count == WINDOW_SIZE)//有足够帧数
         {
             bool result = false;
+            //要有可信的外参值，同时距离上次初始化不成功至少0.1s
+            //Step 3 VIO初始化
             if( ESTIMATE_EXTRINSIC != 2 && (header.stamp.toSec() - initial_timestamp) > 0.1)
             {
                result = initialStructure();
@@ -215,17 +237,25 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         last_P0 = Ps[0];
     }
 }
+/**
+ * @brief VIO初始化，将滑窗中的PVQ恢复到第0帧并且和重力对齐
+ * 
+ * @return true 
+ * @return false 
+ */
 bool Estimator::initialStructure()
 {
     TicToc t_sfm;
-    //check imu observibility
+    //Step 1 check imu observibility
     {
         map<double, ImageFrame>::iterator frame_it;
         Vector3d sum_g;
+        //从第二帧开始检查imu
         for (frame_it = all_image_frame.begin(), frame_it++; frame_it != all_image_frame.end(); frame_it++)
         {
             double dt = frame_it->second.pre_integration->sum_dt;
             Vector3d tmp_g = frame_it->second.pre_integration->delta_v / dt;
+            //累加每一帧带重力加速度的deltav
             sum_g += tmp_g;
         }
         Vector3d aver_g;
@@ -235,28 +265,32 @@ bool Estimator::initialStructure()
         {
             double dt = frame_it->second.pre_integration->sum_dt;
             Vector3d tmp_g = frame_it->second.pre_integration->delta_v / dt;
+            //求方差
             var += (tmp_g - aver_g).transpose() * (tmp_g - aver_g);
             //cout << "frame g " << tmp_g.transpose() << endl;
         }
-        var = sqrt(var / ((int)all_image_frame.size() - 1));
+        var = sqrt(var / ((int)all_image_frame.size() - 1));//计算标准差
         //ROS_WARN("IMU variation %f!", var);
+        //这里实际上并没有用到，作者注释掉了
         if(var < 0.25)
         {
             ROS_INFO("IMU excitation not enouth!");
             //return false;
         }
     }
-    // global sfm
+    //Step 2 global sfm 纯视觉单目slam
     Quaterniond Q[frame_count + 1];
     Vector3d T[frame_count + 1];
     map<int, Vector3d> sfm_tracked_points;
-    vector<SFMFeature> sfm_f;
+    vector<SFMFeature> sfm_f;//保存每个特征点的信息
+    //遍历所有特征点
     for (auto &it_per_id : f_manager.feature)
     {
-        int imu_j = it_per_id.start_frame - 1;
-        SFMFeature tmp_feature;
+        int imu_j = it_per_id.start_frame - 1;//改变量和imu没有关系，就是存储观测特征点的帧的索引
+        SFMFeature tmp_feature;//用来后续做sfm
         tmp_feature.state = false;
         tmp_feature.id = it_per_id.feature_id;
+        //遍历当前特征点的观测信息
         for (auto &it_per_frame : it_per_id.feature_per_frame)
         {
             imu_j++;
@@ -267,7 +301,7 @@ bool Estimator::initialStructure()
     } 
     Matrix3d relative_R;
     Vector3d relative_T;
-    int l;
+    int l;//枢纽帧在滑窗中的索引
     if (!relativePose(relative_R, relative_T, l))
     {
         ROS_INFO("Not enough features or parallax; Move device around");
@@ -438,14 +472,24 @@ bool Estimator::visualInitialAlign()
 
     return true;
 }
-
+/**
+ * @brief 选定滑窗中的枢纽帧，计算位姿变换
+ * 
+ * @param relative_R 
+ * @param relative_T 
+ * @param l 枢纽帧在滑窗中的索引
+ * @return true 
+ * @return false 
+ */
 bool Estimator::relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l)
 {
     // find previous frame which contians enough correspondance and parallex with newest frame
+    //优先从最前边的帧开始，也就是id=0
     for (int i = 0; i < WINDOW_SIZE; i++)
     {
         vector<pair<Vector3d, Vector3d>> corres;
         corres = f_manager.getCorresponding(i, WINDOW_SIZE);
+        //匹配点对大于20个
         if (corres.size() > 20)
         {
             double sum_parallax = 0;
@@ -454,11 +498,12 @@ bool Estimator::relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l)
             {
                 Vector2d pts_0(corres[j].first(0), corres[j].first(1));
                 Vector2d pts_1(corres[j].second(0), corres[j].second(1));
-                double parallax = (pts_0 - pts_1).norm();
+                double parallax = (pts_0 - pts_1).norm();//计算视差（使用了向量范数）
                 sum_parallax = sum_parallax + parallax;
 
             }
-            average_parallax = 1.0 * sum_parallax / int(corres.size());
+            average_parallax = 1.0 * sum_parallax / int(corres.size());//平均视差
+            //虚拟相机下，平均视差要大于30个像素
             if(average_parallax * 460 > 30 && m_estimator.solveRelativeRT(corres, relative_R, relative_T))
             {
                 l = i;

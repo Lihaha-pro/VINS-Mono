@@ -19,7 +19,11 @@ CameraPoseVisualization cameraposevisual(0, 1, 0, 1);
 CameraPoseVisualization keyframebasevisual(0.0, 0.0, 1.0, 1.0);
 static double sum_of_path = 0;
 static Vector3d last_path(0.0, 0.0, 0.0);
-
+/**
+ * @brief 注册一系列publisher，包括类型，名称，缓存大小
+ * 
+ * @param n 
+ */
 void registerPub(ros::NodeHandle &n)
 {
     pub_latest_odometry = n.advertise<nav_msgs::Odometry>("imu_propagate", 1000);
@@ -41,7 +45,14 @@ void registerPub(ros::NodeHandle &n)
     keyframebasevisual.setScale(0.1);
     keyframebasevisual.setLineWidth(0.01);
 }
-
+/**
+ * @brief 发送最新的位姿结果
+ * 
+ * @param P 
+ * @param Q 
+ * @param V 
+ * @param header 
+ */
 void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q, const Eigen::Vector3d &V, const std_msgs::Header &header)
 {
     Eigen::Quaterniond quadrotor_Q = Q ;

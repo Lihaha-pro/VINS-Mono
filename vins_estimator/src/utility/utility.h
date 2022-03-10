@@ -12,6 +12,7 @@
 class Utility
 {
   public:
+    //对小角度变化从旋转向量到四元数
     template <typename Derived>
     static Eigen::Quaternion<typename Derived::Scalar> deltaQ(const Eigen::MatrixBase<Derived> &theta)
     {

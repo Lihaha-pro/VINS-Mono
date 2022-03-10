@@ -1,7 +1,7 @@
 #include "parameters.h"
 
 double INIT_DEPTH;
-double MIN_PARALLAX;
+double MIN_PARALLAX;//10.0
 double ACC_N, ACC_W;
 double GYR_N, GYR_W;
 
@@ -14,7 +14,7 @@ double BIAS_ACC_THRESHOLD;
 double BIAS_GYR_THRESHOLD;
 double SOLVER_TIME;
 int NUM_ITERATIONS;
-int ESTIMATE_EXTRINSIC;
+int ESTIMATE_EXTRINSIC;//外参可信度：0（有确定的外参）1（有可信度较高的外参）2（没有任何外参信息）
 int ESTIMATE_TD;
 int ROLLING_SHUTTER;
 std::string EX_CALIB_RESULT_PATH;
@@ -51,10 +51,10 @@ void readParameters(ros::NodeHandle &n)
 
     fsSettings["imu_topic"] >> IMU_TOPIC;
 
-    SOLVER_TIME = fsSettings["max_solver_time"];
-    NUM_ITERATIONS = fsSettings["max_num_iterations"];
-    MIN_PARALLAX = fsSettings["keyframe_parallax"];
-    MIN_PARALLAX = MIN_PARALLAX / FOCAL_LENGTH;
+    SOLVER_TIME = fsSettings["max_solver_time"];        //单次优化最大求解时间 0.04
+    NUM_ITERATIONS = fsSettings["max_num_iterations"];  //单次优化最大迭代次数 8
+    MIN_PARALLAX = fsSettings["keyframe_parallax"];     //根据视差确定关键帧 10.0
+    MIN_PARALLAX = MIN_PARALLAX / FOCAL_LENGTH; //利用虚拟相机统一阈值参数
 
     std::string OUTPUT_PATH;
     fsSettings["output_path"] >> OUTPUT_PATH;
@@ -75,7 +75,7 @@ void readParameters(ros::NodeHandle &n)
     ROW = fsSettings["image_height"];
     COL = fsSettings["image_width"];
     ROS_INFO("ROW: %f COL: %f ", ROW, COL);
-
+    //旋转和平移外参的几种形式
     ESTIMATE_EXTRINSIC = fsSettings["estimate_extrinsic"];
     if (ESTIMATE_EXTRINSIC == 2)
     {
@@ -92,7 +92,7 @@ void readParameters(ros::NodeHandle &n)
             ROS_WARN(" Optimize extrinsic param around initial guess!");
             EX_CALIB_RESULT_PATH = OUTPUT_PATH + "/extrinsic_parameter.csv";
         }
-        if (ESTIMATE_EXTRINSIC == 0)
+        if (ESTIMATE_EXTRINSIC == 0)//走这个
             ROS_WARN(" fix extrinsic param ");
 
         cv::Mat cv_R, cv_T;
@@ -111,10 +111,11 @@ void readParameters(ros::NodeHandle &n)
         
     } 
 
-    INIT_DEPTH = 5.0;
-    BIAS_ACC_THRESHOLD = 0.1;
+    INIT_DEPTH = 5.0;           //特征点深度默认值
+    BIAS_ACC_THRESHOLD = 0.1;   //这两个量没有用到
     BIAS_GYR_THRESHOLD = 0.1;
 
+    //传感器时延相关
     TD = fsSettings["td"];
     ESTIMATE_TD = fsSettings["estimate_td"];
     if (ESTIMATE_TD)

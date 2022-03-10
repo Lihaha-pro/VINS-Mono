@@ -29,8 +29,8 @@ class Estimator
     Estimator();
 
     void setParameter();
-
     // interface
+    
     void processIMU(double t, const Vector3d &linear_acceleration, const Vector3d &angular_velocity);
     void processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const std_msgs::Header &header);
     void setReloFrame(double _frame_stamp, int _frame_index, vector<Vector3d> &_match_points, Vector3d _relo_t, Matrix3d _relo_r);
@@ -76,7 +76,7 @@ class Estimator
     Matrix3d Rs[(WINDOW_SIZE + 1)];
     Vector3d Bas[(WINDOW_SIZE + 1)];
     Vector3d Bgs[(WINDOW_SIZE + 1)];
-    double td;
+    double td;//延时
 
     Matrix3d back_R0, last_R, last_R0;
     Vector3d back_P0, last_P, last_P0;

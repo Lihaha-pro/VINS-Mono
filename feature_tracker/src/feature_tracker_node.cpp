@@ -168,7 +168,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         }
         else
             pub_img.publish(feature_points);//前端得到的信息通过publisher发布出去
-
+        //可视化相关函数
         if (SHOW_TRACK)
         {
             ptr = cv_bridge::cvtColor(ptr, sensor_msgs::image_encodings::BGR8);
