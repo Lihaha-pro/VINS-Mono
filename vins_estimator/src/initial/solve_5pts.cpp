@@ -190,7 +190,7 @@ namespace cv {
 }
 
 /**
- * @brief 根据两帧匹配对求解R和带尺度的t
+ * @brief 根据两帧匹配对求解R和带尺度的t，使用opencv接口计算E矩阵
  * 
  * @param corres 入参，匹配对
  * @param Rotation 

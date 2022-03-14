@@ -41,7 +41,12 @@ class IntegrationBase
         gyr_buf.push_back(gyr);
         propagate(dt, acc, gyr);
     }
-
+    /**
+     * @brief 根据新设置的imu零偏重新对该帧进行预积分
+     * 
+     * @param _linearized_ba 
+     * @param _linearized_bg 
+     */
     void repropagate(const Eigen::Vector3d &_linearized_ba, const Eigen::Vector3d &_linearized_bg)
     {
         sum_dt = 0.0;

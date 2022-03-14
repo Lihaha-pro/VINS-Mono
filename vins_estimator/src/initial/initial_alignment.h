@@ -18,7 +18,7 @@ class ImageFrame
         {
             points = _points;
         };
-        map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>> > > points;
+        map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>> > > points;//保存当前帧的特征点信息，索引是feature_id
         double t;
         Matrix3d R;
         Vector3d T;

@@ -155,7 +155,7 @@ void GlobalSFM::triangulateTwoFrames(int frame0, Eigen::Matrix<double, 3, 4> &Po
  * @param relative_R 枢纽帧和最后一帧的旋转R12
  * @param relative_T t12
  * @param sfm_f 用来做sfm的特征点集合
- * @param sfm_tracked_points 恢复出来的地图点
+ * @param sfm_tracked_points 新定义的存储恢复出来的地图点
  * @return true 
  * @return false 
  */
@@ -284,12 +284,14 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 */
 	//full BA
 	//Step 5 求出所有的位姿和3D点之后，进行视觉slam的global BA
+	//llh:这里使用了自动求导，后边在滑窗优化时使用的是解析求导，即定义了Jacobian的计算方式
 	ceres::Problem problem;
-	ceres::LocalParameterization* local_parameterization = new ceres::QuaternionParameterization();
+	ceres::LocalParameterization* local_parameterization = new ceres::QuaternionParameterization();//自定义四元数加法规则
 	//cout << " begin full BA " << endl;
 	for (int i = 0; i < frame_num; i++)
 	{
-		//double array for ceres
+		//double array for ceres、
+		//将参数都转换为double数组（ceres只认识double数组）
 		c_translation[i][0] = c_Translation[i].x();
 		c_translation[i][1] = c_Translation[i].y();
 		c_translation[i][2] = c_Translation[i].z();
@@ -297,8 +299,10 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 		c_rotation[i][1] = c_Quat[i].x();
 		c_rotation[i][2] = c_Quat[i].y();
 		c_rotation[i][3] = c_Quat[i].z();
-		problem.AddParameterBlock(c_rotation[i], 4, local_parameterization);
+		problem.AddParameterBlock(c_rotation[i], 4, local_parameterization);//指定四元数递增方式
 		problem.AddParameterBlock(c_translation[i], 3);
+		//由于是单目视觉slam，有七个自由度不可观，因此fix一些参数块避免零空间飘移
+		//!fix枢纽帧l的位姿作为世界坐标系零点，同时fix最后一帧的位移来fix尺度
 		if (i == l)
 		{
 			problem.SetParameterBlockConstant(c_rotation[i]);
@@ -308,30 +312,33 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 			problem.SetParameterBlockConstant(c_translation[i]);
 		}
 	}
-
+	//只有世界重投影构成约束，因此遍历所有的特征点，构建约束
 	for (int i = 0; i < feature_num; i++)
 	{
 		if (sfm_f[i].state != true)
 			continue;
+		//遍历所有的观测帧，建立约束
 		for (int j = 0; j < int(sfm_f[i].observation.size()); j++)
 		{
-			int l = sfm_f[i].observation[j].first;
+			int l = sfm_f[i].observation[j].first;//该特征点在哪一帧被看到
+			//残差计算方式
 			ceres::CostFunction* cost_function = ReprojectionError3D::Create(
 												sfm_f[i].observation[j].second.x(),
 												sfm_f[i].observation[j].second.y());
 
     		problem.AddResidualBlock(cost_function, NULL, c_rotation[l], c_translation[l], 
-    								sfm_f[i].position);	 
+    								sfm_f[i].position);//NULL表示不使用核函数，后边是要优化的变量（旋转 平移 3D点）	 
 		}
 
 	}
-	ceres::Solver::Options options;
+	ceres::Solver::Options options;//配置一些ceres求解选项
 	options.linear_solver_type = ceres::DENSE_SCHUR;
 	//options.minimizer_progress_to_stdout = true;
 	options.max_solver_time_in_seconds = 0.2;
 	ceres::Solver::Summary summary;
 	ceres::Solve(options, &problem, &summary);
 	//std::cout << summary.BriefReport() << "\n";
+	//判断是收敛，或者最后的残差比较小
 	if (summary.termination_type == ceres::CONVERGENCE || summary.final_cost < 5e-03)
 	{
 		//cout << "vision only BA converge" << endl;
@@ -341,6 +348,8 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 		//cout << "vision only BA not converge " << endl;
 		return false;
 	}
+	//优化结束，把double数组值返回到对应的类型中去
+	//同时Tcw->Twc
 	for (int i = 0; i < frame_num; i++)
 	{
 		q[i].w() = c_rotation[i][0]; 

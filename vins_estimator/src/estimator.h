@@ -64,13 +64,13 @@ class Estimator
 
     SolverFlag solver_flag;
     MarginalizationFlag  marginalization_flag;
-    Vector3d g;
+    Vector3d g;//重力矢量
     MatrixXd Ap[2], backup_A;
     VectorXd bp[2], backup_b;
 
     Matrix3d ric[NUM_OF_CAM];
     Vector3d tic[NUM_OF_CAM];
-
+    //窗口中的[P,V,R,Ba,Bg]
     Vector3d Ps[(WINDOW_SIZE + 1)];
     Vector3d Vs[(WINDOW_SIZE + 1)];
     Matrix3d Rs[(WINDOW_SIZE + 1)];
@@ -83,7 +83,7 @@ class Estimator
     std_msgs::Header Headers[(WINDOW_SIZE + 1)];
 
     IntegrationBase *pre_integrations[(WINDOW_SIZE + 1)];
-    Vector3d acc_0, gyr_0;
+    Vector3d acc_0, gyr_0;//当前的加速度和角速度
 
     vector<double> dt_buf[(WINDOW_SIZE + 1)];
     vector<Vector3d> linear_acceleration_buf[(WINDOW_SIZE + 1)];

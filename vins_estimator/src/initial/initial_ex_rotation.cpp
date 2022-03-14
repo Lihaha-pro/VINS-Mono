@@ -19,7 +19,7 @@ InitialEXRotation::InitialEXRotation(){
 bool InitialEXRotation::CalibrationExRotation(vector<pair<Vector3d, Vector3d>> corres, Quaterniond delta_q_imu, Matrix3d &calib_ric_result)
 {
     frame_count++;
-    //根据特征关联求解两个连续帧相机的旋转R12
+    ///根据特征关联求解两个连续帧相机的旋转R12
     Rc.push_back(solveRelativeR(corres));
     Rimu.push_back(delta_q_imu.toRotationMatrix());
     //通过外参吧imu的旋转转移到相机坐标系，用于计算两种旋转的差值，从而给出一个核函数

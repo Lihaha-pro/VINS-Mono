@@ -21,7 +21,10 @@ struct SFMFeature
     double position[3];
     double depth;
 };
-
+/**
+ * @brief 使用ceres自动求导必须要创建的残差计算方式（重载括号运算符）
+ * 
+ */
 struct ReprojectionError3D
 {
 	ReprojectionError3D(double observed_u, double observed_v)
@@ -32,7 +35,7 @@ struct ReprojectionError3D
 	bool operator()(const T* const camera_R, const T* const camera_T, const T* point, T* residuals) const
 	{
 		T p[3];
-		ceres::QuaternionRotatePoint(camera_R, point, p);
+		ceres::QuaternionRotatePoint(camera_R, point, p);//使用ceres定义好的四元数乘法计算函数，得到旋转之后的坐标p
 		p[0] += camera_T[0]; p[1] += camera_T[1]; p[2] += camera_T[2];
 		T xp = p[0] / p[2];
     	T yp = p[1] / p[2];
@@ -44,9 +47,7 @@ struct ReprojectionError3D
 	static ceres::CostFunction* Create(const double observed_x,
 	                                   const double observed_y) 
 	{
-	  return (new ceres::AutoDiffCostFunction<
-	          ReprojectionError3D, 2, 4, 3, 3>(
-	          	new ReprojectionError3D(observed_x,observed_y)));
+	  return (new ceres::AutoDiffCostFunction<ReprojectionError3D, 2, 4, 3, 3>(new ReprojectionError3D(observed_x,observed_y)));
 	}
 
 	double observed_u;

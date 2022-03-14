@@ -42,12 +42,12 @@ int FeatureManager::getFeatureCount()
 }
 
 /**
- * @brief 更新特征点管理器，同时返回是否认为是关键帧
+ * @brief 更新特征点管理器feature，同时根据每个特征点的跟踪次数以及次新帧和次次新帧之间的视差判断是否认为是关键帧
  * 
- * @param frame_count 
- * @param image 
- * @param td 
- * @return true 
+ * @param frame_count 窗口内帧的个数
+ * @param image 某帧所有特征点的[camera_id,[x,y,z,u,v,vx,vy]]s构成的map,索引为feature_id
+ * @param td imu和图像的同步时间差
+ * @return true 次新帧是否是关键帧
  * @return false 
  */
 bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, double td)
@@ -144,7 +144,7 @@ vector<pair<Vector3d, Vector3d>> FeatureManager::getCorresponding(int frame_coun
     vector<pair<Vector3d, Vector3d>> corres;
     for (auto &it : feature)
     {
-        //保证需要的特征点呗两帧都观测到
+        //保证需要的特征点被两帧都观测到
         if (it.start_frame <= frame_count_l && it.endFrame() >= frame_count_r)
         {
             Vector3d a = Vector3d::Zero(), b = Vector3d::Zero();
@@ -206,7 +206,7 @@ void FeatureManager::clearDepth(const VectorXd &x)
 
 VectorXd FeatureManager::getDepthVector()
 {
-    VectorXd dep_vec(getFeatureCount());
+    VectorXd dep_vec(getFeatureCount());//括号内得到有效的地图点数目
     int feature_index = -1;
     for (auto &it_per_id : feature)
     {
@@ -221,7 +221,13 @@ VectorXd FeatureManager::getDepthVector()
     }
     return dep_vec;
 }
-
+/**
+ * @brief 对特征点进行三角化求深度（SVD分解）
+ * 
+ * @param Ps 
+ * @param tic 
+ * @param ric 
+ */
 void FeatureManager::triangulate(Vector3d Ps[], Vector3d tic[], Matrix3d ric[])
 {
     for (auto &it_per_id : feature)
@@ -230,7 +236,7 @@ void FeatureManager::triangulate(Vector3d Ps[], Vector3d tic[], Matrix3d ric[])
         if (!(it_per_id.used_num >= 2 && it_per_id.start_frame < WINDOW_SIZE - 2))
             continue;
 
-        if (it_per_id.estimated_depth > 0)
+        if (it_per_id.estimated_depth > 0)//代表已经三角化过了
             continue;
         int imu_i = it_per_id.start_frame, imu_j = imu_i - 1;
 
@@ -239,29 +245,36 @@ void FeatureManager::triangulate(Vector3d Ps[], Vector3d tic[], Matrix3d ric[])
         int svd_idx = 0;
 
         Eigen::Matrix<double, 3, 4> P0;
+        //Twi->Twc
         Eigen::Vector3d t0 = Ps[imu_i] + Rs[imu_i] * tic[0];
         Eigen::Matrix3d R0 = Rs[imu_i] * ric[0];
         P0.leftCols<3>() = Eigen::Matrix3d::Identity();
         P0.rightCols<1>() = Eigen::Vector3d::Zero();
-
+        //遍历所有看到这个特征点的KF
         for (auto &it_per_frame : it_per_id.feature_per_frame)
         {
             imu_j++;
-
+            //R t为第j帧相机坐标系到第i帧相机坐标系的变换矩阵，P为i到j的变换矩阵
             Eigen::Vector3d t1 = Ps[imu_j] + Rs[imu_j] * tic[0];
             Eigen::Matrix3d R1 = Rs[imu_j] * ric[0];
             Eigen::Vector3d t = R0.transpose() * (t1 - t0);
             Eigen::Matrix3d R = R0.transpose() * R1;
             Eigen::Matrix<double, 3, 4> P;
+            //相当于吧c0当做世界坐标系（就是第一个观察到该特征点的图片）
             P.leftCols<3>() = R.transpose();
             P.rightCols<1>() = -R.transpose() * t;
             Eigen::Vector3d f = it_per_frame.point.normalized();
+            //P = [P1 P2 P3]^T 
+            //AX=0      A = [A(2*i) A(2*i+1) A(2*i+2) A(2*i+3) ...]^T
+            //A(2*i)   = x(i) * P3 - z(i) * P1
+            //A(2*i+1) = y(i) * P3 - z(i) * P2
             svd_A.row(svd_idx++) = f[0] * P.row(2) - f[2] * P.row(0);
             svd_A.row(svd_idx++) = f[1] * P.row(2) - f[2] * P.row(1);
 
             if (imu_i == imu_j)
                 continue;
         }
+        //对A的SVD分解得到其最小奇异值对应的单位奇异向量(x,y,z,w)，深度为z/w
         ROS_ASSERT(svd_idx == svd_A.rows());
         Eigen::Vector4d svd_V = Eigen::JacobiSVD<Eigen::MatrixXd>(svd_A, Eigen::ComputeThinV).matrixV().rightCols<1>();
         double svd_method = svd_V[2] / svd_V[3];
@@ -374,7 +387,7 @@ void FeatureManager::removeFront(int frame_count)
         }
     }
 }
-
+//计算某个特征点it_per_id在次新帧和次次新帧的视差
 double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int frame_count)
 {
     //check the second last frame is keyframe or not

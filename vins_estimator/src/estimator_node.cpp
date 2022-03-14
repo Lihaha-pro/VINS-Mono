@@ -17,35 +17,36 @@ Estimator estimator;
 
 std::condition_variable con;
 double current_time = -1;
-queue<sensor_msgs::ImuConstPtr> imu_buf;
-queue<sensor_msgs::PointCloudConstPtr> feature_buf;
+queue<sensor_msgs::ImuConstPtr> imu_buf;//imu数据buffer
+queue<sensor_msgs::PointCloudConstPtr> feature_buf;//图像特征点buffer
 queue<sensor_msgs::PointCloudConstPtr> relo_buf;
 int sum_of_wait = 0;
 
-std::mutex m_buf;
+std::mutex m_buf;//互斥量
 std::mutex m_state;
 std::mutex i_buf;
 std::mutex m_estimator;
 
 double latest_time;
-Eigen::Vector3d tmp_P;
+Eigen::Vector3d tmp_P;//用于发布的当前PVQ
 Eigen::Quaterniond tmp_Q;
 Eigen::Vector3d tmp_V;
 Eigen::Vector3d tmp_Ba;
 Eigen::Vector3d tmp_Bg;
-Eigen::Vector3d acc_0;
+Eigen::Vector3d acc_0;//
 Eigen::Vector3d gyr_0;
 bool init_feature = 0;
 bool init_imu = 1;
 double last_imu_t = 0;
 /**
- * @brief 根据当前imu数据预测当前位姿 即tmp_P V Q
+ * @brief 根据当前imu数据，以及上一个PVQ，递推得到当前位姿 即tmp_P V Q
  * 
  * @param imu_msg 
  */
 void predict(const sensor_msgs::ImuConstPtr &imu_msg)
 {
     double t = imu_msg->header.stamp.toSec();
+    //第一帧imu数据
     if (init_imu)
     {
         latest_time = t;
@@ -70,7 +71,7 @@ void predict(const sensor_msgs::ImuConstPtr &imu_msg)
     Eigen::Vector3d un_acc_0 = tmp_Q * (acc_0 - tmp_Ba) - estimator.g;
     //中值陀螺仪读数结果
     Eigen::Vector3d un_gyr = 0.5 * (gyr_0 + angular_velocity) - tmp_Bg;
-    //更新位姿
+    //更新旋转
     tmp_Q = tmp_Q * Utility::deltaQ(un_gyr * dt);
     //当前帧世界坐标系下加速度值
     Eigen::Vector3d un_acc_1 = tmp_Q * (linear_acceleration - tmp_Ba) - estimator.g;
@@ -83,7 +84,10 @@ void predict(const sensor_msgs::ImuConstPtr &imu_msg)
     acc_0 = linear_acceleration;
     gyr_0 = angular_velocity;
 }
-
+/**
+ * @brief 从估计器中得到滑动窗口当前图像帧的imu更新项[P,Q,V,ba,bg,a,g]，对imu_buf中剩余的imu_msg进行PVQ递推
+ * 
+ */
 void update()
 {
     TicToc t_predict;
@@ -103,6 +107,7 @@ void update()
 }
 /**
  * @brief 获得匹配好的imu和图像的pair：Get the Measurements object
+ * 将缓存中的图像特征数据和imu数据取完，才跳出此函数，并返回数据
  * 
  * @return std::vector<std::pair<std::vector<sensor_msgs::ImuConstPtr>, sensor_msgs::PointCloudConstPtr>> 
  */
@@ -140,7 +145,7 @@ getMeasurements()
             IMUs.emplace_back(imu_buf.front());
             imu_buf.pop();
         }
-        IMUs.emplace_back(imu_buf.front());//取出图像时间戳之后的一帧imu数据，但并不pop
+        IMUs.emplace_back(imu_buf.front());//取出图像时间戳之后的一帧imu数据，但并不pop，因为当前帧图片和下一帧图片都要用这个imu_msg
         if (IMUs.empty())
             ROS_WARN("no imu between two image");
         measurements.emplace_back(IMUs, img_msg);
@@ -164,23 +169,23 @@ void imu_callback(const sensor_msgs::ImuConstPtr &imu_msg)
     m_buf.lock();
     imu_buf.push(imu_msg);//imu数据送入buffer
     m_buf.unlock();
-    con.notify_one();
+    con.notify_one();//唤醒作用于process线程中的获取观测数据的函数
 
     last_imu_t = imu_msg->header.stamp.toSec();
 
     {
         std::lock_guard<std::mutex> lg(m_state);
-        predict(imu_msg);
+        predict(imu_msg);///递推得到imu的pvq
         std_msgs::Header header = imu_msg->header;
         header.frame_id = "world";
         //初始化完成后发布位姿信息
         if (estimator.solver_flag == Estimator::SolverFlag::NON_LINEAR)
-            pubLatestOdometry(tmp_P, tmp_Q, tmp_V, header);
+            pubLatestOdometry(tmp_P, tmp_Q, tmp_V, header);//发布当前PVQ及时间戳
     }
 }
 
 /**
- * @brief 前端光流结果送进buffer【feature_buf】
+ * @brief 前端光流结果feature_msg送进buffer【feature_buf】
  * 
  * @param feature_msg 
  */
@@ -198,7 +203,7 @@ void feature_callback(const sensor_msgs::PointCloudConstPtr &feature_msg)
     con.notify_one();
 }
 /**
- * @brief vins估计器复位
+ * @brief vins估计器复位，收到restart时清空feature_buf和imu_buf，估计器重置，时间重置
  * 
  * @param restart_msg 
  */
@@ -222,7 +227,11 @@ void restart_callback(const std_msgs::BoolConstPtr &restart_msg)
     }
     return;
 }
-
+/**
+ * @brief relocalization回调函数，将points_msg放入relo_buf  //?这个relo_buf是什么哟
+ * 
+ * @param points_msg 
+ */
 void relocalization_callback(const sensor_msgs::PointCloudConstPtr &points_msg)
 {
     //printf("relocalization callback! \n");
@@ -232,6 +241,13 @@ void relocalization_callback(const sensor_msgs::PointCloudConstPtr &points_msg)
 }
 
 // thread: visual-inertial odometry
+/**
+ * @brief VIO的主线程
+ * @Description 等待并获取measurements：(IMUs, img_msg)s，计算dt
+ *              estimator.processIMU()进行IMU预积分         
+ *              estimator.setReloFrame()设置重定位帧
+ *              estimator.processImage()处理图像帧：初始化，紧耦合的非线性优化
+ */
 void process()
 {
     while (true)//该线程始终循环
@@ -240,14 +256,14 @@ void process()
         std::unique_lock<std::mutex> lk(m_buf);
         con.wait(lk, [&]
                  {
-            return (measurements = getMeasurements()).size() != 0;//!获得对齐的图像和imu的值
+            return (measurements = getMeasurements()).size() != 0;///获得对齐的图像和imu的值
                  });
         lk.unlock();//数据buffer锁解开，回调可以继续塞数据
         m_estimator.lock();//进行后端求解，不能和复位重启冲突
         //基于范围的for循环，遍历每组image imu组合
         for (auto &measurement : measurements)
         {
-            auto img_msg = measurement.second;
+            auto img_msg = measurement.second;//图像特征
             double dx = 0, dy = 0, dz = 0, rx = 0, ry = 0, rz = 0;
             //遍历组中imu数据
             for (auto &imu_msg : measurement.first)
@@ -258,7 +274,7 @@ void process()
                 { 
                     if (current_time < 0)
                         current_time = t;
-                    double dt = t - current_time;
+                    double dt = t - current_time;//两帧imu数据时间差
                     ROS_ASSERT(dt >= 0);
                     current_time = t;
                     dx = imu_msg->linear_acceleration.x;
@@ -267,7 +283,7 @@ void process()
                     rx = imu_msg->angular_velocity.x;
                     ry = imu_msg->angular_velocity.y;
                     rz = imu_msg->angular_velocity.z;
-                    //!imu数据送入estimator进行预积分，提供优化状态量初值
+                    ///imu数据送入estimator进行预积分，提供优化状态量初值
                     estimator.processIMU(dt, Vector3d(dx, dy, dz), Vector3d(rx, ry, rz));
                     //printf("imu: dt:%f a: %f %f %f w: %f %f %f\n",dt, dx, dy, dz, rx, ry, rz);
 
@@ -341,8 +357,9 @@ void process()
                 ROS_ASSERT(z == 1);//检查是否进行了归一化
                 Eigen::Matrix<double, 7, 1> xyz_uv_velocity;
                 xyz_uv_velocity << x, y, z, p_u, p_v, velocity_x, velocity_y;
-                image[feature_id].emplace_back(camera_id,  xyz_uv_velocity);
+                image[feature_id].emplace_back(camera_id,  xyz_uv_velocity);///关键赋值操作
             }
+            //处理图像特征
             estimator.processImage(image, img_msg->header);
 
             double whole_t = t_s.toc();

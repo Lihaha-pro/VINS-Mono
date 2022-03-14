@@ -1,10 +1,17 @@
 #include "initial_alignment.h"
-
+/**
+ * @brief 求陀螺仪零偏，同时利用求出来的零偏进行预积分
+ *        根据视觉SFM的结果来校正陀螺仪Bias -> Paper V-B-1
+ *        主要是将相邻帧之间SFM求解出来的旋转矩阵与IMU预积分的旋转量对齐
+ *        注意得到了新的Bias后对应的预积分需要repropagate
+ * @param all_image_frame 所有图片构成的map
+ * @param Bgs 陀螺仪零偏
+ */
 void solveGyroscopeBias(map<double, ImageFrame> &all_image_frame, Vector3d* Bgs)
 {
     Matrix3d A;
     Vector3d b;
-    Vector3d delta_bg;
+    Vector3d delta_bg;//计算得到的新的零偏
     A.setZero();
     b.setZero();
     map<double, ImageFrame>::iterator frame_i;
@@ -19,16 +26,16 @@ void solveGyroscopeBias(map<double, ImageFrame> &all_image_frame, Vector3d* Bgs)
         Eigen::Quaterniond q_ij(frame_i->second.R.transpose() * frame_j->second.R);
         tmp_A = frame_j->second.pre_integration->jacobian.template block<3, 3>(O_R, O_BG);
         tmp_b = 2 * (frame_j->second.pre_integration->delta_q.inverse() * q_ij).vec();
-        A += tmp_A.transpose() * tmp_A;
+        A += tmp_A.transpose() * tmp_A;//利用求解Ax=b超定方程，相当于A矩阵进行了累加
         b += tmp_A.transpose() * tmp_b;
 
     }
-    delta_bg = A.ldlt().solve(b);
+    delta_bg = A.ldlt().solve(b);//利用Eigen函数求解
     ROS_WARN_STREAM("gyroscope bias initial calibration " << delta_bg.transpose());
-
+    //滑窗中的零偏设置为求解出来的零偏
     for (int i = 0; i <= WINDOW_SIZE; i++)
         Bgs[i] += delta_bg;
-
+    //对all_image_frame中预积分量根据当前零偏重新积分
     for (frame_i = all_image_frame.begin(); next(frame_i) != all_image_frame.end( ); frame_i++)
     {
         frame_j = next(frame_i);
@@ -36,7 +43,12 @@ void solveGyroscopeBias(map<double, ImageFrame> &all_image_frame, Vector3d* Bgs)
     }
 }
 
-
+/**
+ * @brief 在半径为G的半球找到切面的一对正交基 -> Algorithm 1  
+ * 
+ * @param g0 
+ * @return MatrixXd 
+ */
 MatrixXd TangentBasis(Vector3d &g0)
 {
     Vector3d b, c;
@@ -51,7 +63,15 @@ MatrixXd TangentBasis(Vector3d &g0)
     bc.block<3, 1>(0, 1) = c;
     return bc;
 }
-
+/**
+ * @brief   重力矢量细化
+ * @optional    重力细化，在其切线空间上用两个变量重新参数化重力 -> Paper V-B-3 
+                g^ = ||g|| * (g^-) + w1b1 + w2b2 
+ * @param[in]   all_image_frame 所有图像帧构成的map,图像帧保存了位姿，预积分量和关于角点的信息
+ * @param[out]  g 重力加速度
+ * @param[out]  x 待优化变量，窗口中每帧的速度V[0:n]、二自由度重力参数w[w1,w2]^T、尺度s
+ * @return      void
+*/
 void RefineGravity(map<double, ImageFrame> &all_image_frame, Vector3d &g, VectorXd &x)
 {
     Vector3d g0 = g.normalized() * G.norm();
@@ -116,12 +136,21 @@ void RefineGravity(map<double, ImageFrame> &all_image_frame, Vector3d &g, Vector
             b = b * 1000.0;
             x = A.ldlt().solve(b);
             VectorXd dg = x.segment<2>(n_state - 3);
-            g0 = (g0 + lxly * dg).normalized() * G.norm();
+            g0 = (g0 + lxly * dg).normalized() * G.norm();//合成新的重力矢量
             //double s = x(n_state - 1);
     }   
     g = g0;
 }
-
+/**
+ * @brief   计算尺度，重力加速度和速度
+ * @optional    速度、重力向量和尺度初始化Paper -> V-B-2
+ *              相邻帧之间的位置和速度与IMU预积分出来的位置和速度对齐，求解最小二乘
+ *              重力细化 -> Paper V-B-3    
+ * @param[in]   all_image_frame 所有图像帧构成的map,图像帧保存了位姿，预积分量和关于角点的信息
+ * @param[out]  g 重力加速度
+ * @param[out]  x 待优化变量，窗口中每帧的速度V[0:n]、重力g、尺度s
+ * @return      
+*/
 bool LinearAlignment(map<double, ImageFrame> &all_image_frame, Vector3d &g, VectorXd &x)
 {
     int all_frame_count = all_image_frame.size();
@@ -181,12 +210,13 @@ bool LinearAlignment(map<double, ImageFrame> &all_image_frame, Vector3d &g, Vect
     ROS_DEBUG("estimated scale: %f", s);
     g = x.segment<3>(n_state - 4);
     ROS_DEBUG_STREAM(" result g     " << g.norm() << " " << g.transpose());
+    //检查算出来的g方向以及尺度
     if(fabs(g.norm() - G.norm()) > 1.0 || s < 0)
     {
         return false;
     }
 
-    RefineGravity(all_image_frame, g, x);
+    RefineGravity(all_image_frame, g, x);///重力细化
     s = (x.tail<1>())(0) / 100.0;
     (x.tail<1>())(0) = s;
     ROS_DEBUG_STREAM(" refine     " << g.norm() << " " << g.transpose());
@@ -195,10 +225,19 @@ bool LinearAlignment(map<double, ImageFrame> &all_image_frame, Vector3d &g, Vect
     else
         return true;
 }
-
+/**
+ * @brief 视觉惯性对齐函数
+ * 
+ * @param all_image_frame 每帧的位姿和对应的预积分量
+ * @param Bgs 陀螺仪零偏
+ * @param g 重力向量
+ * @param x 其他状态量
+ * @return true 
+ * @return false 
+ */
 bool VisualIMUAlignment(map<double, ImageFrame> &all_image_frame, Vector3d* Bgs, Vector3d &g, VectorXd &x)
 {
-    solveGyroscopeBias(all_image_frame, Bgs);
+    solveGyroscopeBias(all_image_frame, Bgs);//计算陀螺仪零偏
 
     if(LinearAlignment(all_image_frame, g, x))
         return true;
