@@ -203,7 +203,11 @@ void FeatureManager::clearDepth(const VectorXd &x)
         it_per_id.estimated_depth = 1.0 / x(++feature_index);
     }
 }
-
+/**
+ * @brief 得到特征点逆深度
+ * 
+ * @return VectorXd 
+ */
 VectorXd FeatureManager::getDepthVector()
 {
     VectorXd dep_vec(getFeatureCount());//括号内得到有效的地图点数目
@@ -222,7 +226,7 @@ VectorXd FeatureManager::getDepthVector()
     return dep_vec;
 }
 /**
- * @brief 对特征点进行三角化求深度（SVD分解）
+ * @brief 对特征点进行三角化求深度（SVD分解）注意是对所有被两个及以上的帧观测到的特征点进行三角化
  * 
  * @param Ps 
  * @param tic 

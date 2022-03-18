@@ -5,7 +5,10 @@ Estimator::Estimator(): f_manager{Rs}
     ROS_INFO("init begins");
     clearState();
 }
-
+/**
+ * @brief 外参，重投影置信度（1.5个像素），延时设置
+ * 
+ */
 void Estimator::setParameter()
 {
     for (int i = 0; i < NUM_OF_CAM; i++)
@@ -190,9 +193,12 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
             }
             if(result)
             {
-                solver_flag = NON_LINEAR;
+                solver_flag = NON_LINEAR;//标志位改成非线性优化（之前一直是初始化状态）
+                //Step 4 非线性优化求解VIO
                 solveOdometry();
+                //Step 5 滑动窗口
                 slideWindow();
+                //Step 6 移除无效地图点
                 f_manager.removeFailures();
                 ROS_INFO("Initialization finish!");
                 last_R = Rs[WINDOW_SIZE];
@@ -210,10 +216,10 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
     else
     {
         TicToc t_solve;
-        solveOdometry();
+        solveOdometry();//1
         ROS_DEBUG("solver costs: %fms", t_solve.toc());
 
-        if (failureDetection())
+        if (failureDetection())//2
         {
             ROS_WARN("failure detection!");
             failure_occur = 1;
@@ -224,15 +230,15 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         }
 
         TicToc t_margin;
-        slideWindow();
-        f_manager.removeFailures();
+        slideWindow();//3
+        f_manager.removeFailures();//4取出估计失败的点并发布特征点位置
         ROS_DEBUG("marginalization costs: %fms", t_margin.toc());
         // prepare output of VINS
-        key_poses.clear();
+        key_poses.clear();//5
         for (int i = 0; i <= WINDOW_SIZE; i++)
             key_poses.push_back(Ps[i]);
 
-        last_R = Rs[WINDOW_SIZE];
+        last_R = Rs[WINDOW_SIZE];//6
         last_P = Ps[WINDOW_SIZE];
         last_R0 = Rs[0];
         last_P0 = Ps[0];
@@ -560,20 +566,29 @@ bool Estimator::relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l)
     }
     return false;
 }
-
+/**
+ * @brief //三角化求解所有特征点的深度，并进行非线性优化
+ * 
+ */
 void Estimator::solveOdometry()
 {
+    //保证滑窗中帧满了
     if (frame_count < WINDOW_SIZE)
         return;
+    //齐次要求初始化已经完成
     if (solver_flag == NON_LINEAR)
     {
         TicToc t_tri;
+        //先把应该三角化但没有三角化的特征点三角化，方便后边提供约束
         f_manager.triangulate(Ps, tic, ric);
         ROS_DEBUG("triangulation costs %f", t_tri.toc());
         optimization();
     }
 }
-
+/**
+ * @brief 优化过程开始前将待优化变量存入double数组
+ * 
+ */
 void Estimator::vector2double()
 {
     for (int i = 0; i <= WINDOW_SIZE; i++)
@@ -610,14 +625,19 @@ void Estimator::vector2double()
         para_Ex_Pose[i][5] = q.z();
         para_Ex_Pose[i][6] = q.w();
     }
-
+    //特征点逆深度
     VectorXd dep = f_manager.getDepthVector();
     for (int i = 0; i < f_manager.getFeatureCount(); i++)
         para_Feature[i][0] = dep(i);
+    //传感器时间同步
     if (ESTIMATE_TD)
         para_Td[0][0] = td;
 }
-
+/**
+ * @brief 数据转换，vector2double的相反过程
+ * 同时这里为防止优化结果往零空间变化，会根据优化前后第一帧的位姿差进行修正。
+ * 也就是恢复到原始第一帧的位姿下
+ */
 void Estimator::double2vector()
 {
     Vector3d origin_R0 = Utility::R2ypr(Rs[0]);
@@ -629,12 +649,14 @@ void Estimator::double2vector()
         origin_P0 = last_P0;
         failure_occur = 0;
     }
+    //优化后的位姿
     Vector3d origin_R00 = Utility::R2ypr(Quaterniond(para_Pose[0][6],
                                                       para_Pose[0][3],
                                                       para_Pose[0][4],
                                                       para_Pose[0][5]).toRotationMatrix());
+    //得到优化前后位姿的差yaw
     double y_diff = origin_R0.x() - origin_R00.x();
-    //TODO
+
     Matrix3d rot_diff = Utility::ypr2R(Vector3d(y_diff, 0, 0));
     if (abs(abs(origin_R0.y()) - 90) < 1.0 || abs(abs(origin_R00.y()) - 90) < 1.0)
     {
@@ -644,12 +666,12 @@ void Estimator::double2vector()
                                        para_Pose[0][4],
                                        para_Pose[0][5]).toRotationMatrix().transpose();
     }
-
+    //根据位姿差做修正，保证第一帧优化前后位姿不变
     for (int i = 0; i <= WINDOW_SIZE; i++)
     {
-
+        //保持第1帧yaw不变
         Rs[i] = rot_diff * Quaterniond(para_Pose[i][6], para_Pose[i][3], para_Pose[i][4], para_Pose[i][5]).normalized().toRotationMatrix();
-        
+        //保持第1帧平移不变
         Ps[i] = rot_diff * Vector3d(para_Pose[i][0] - para_Pose[0][0],
                                 para_Pose[i][1] - para_Pose[0][1],
                                 para_Pose[i][2] - para_Pose[0][2]) + origin_P0;
@@ -757,19 +779,32 @@ bool Estimator::failureDetection()
     return false;
 }
 
-
+/**
+ * @brief 基于滑动窗口紧耦合的非线性优化，残差项的构造和求解
+ *        添加要优化的变量 (p,v,q,ba,bg) 一共15个自由度，IMU的外参也可以加进来
+ *        添加残差，残差项分为4块 先验残差+IMU残差+视觉残差+闭环检测残差
+ *        根据倒数第二帧是不是关键帧确定边缘化的结果    
+ * 
+ */
 void Estimator::optimization()
 {
+    //ceres进行非线性优化
     ceres::Problem problem;
-    ceres::LossFunction *loss_function;
-    //loss_function = new ceres::HuberLoss(1.0);
+    ceres::LossFunction *loss_function;//定义核函数
     loss_function = new ceres::CauchyLoss(1.0);
+    //loss_function = new ceres::HuberLoss(1.0);
+    //Step 1 添加ceres参数块，类似g2o顶点
+    //因为ceres用的是double数组，所以在下面用vector2double做类型装换
+    //Ps、Rs转变成para_Pose，Vs、Bas、Bgs转变成para_SpeedBias
+    //参数块 1：滑窗中图片位置，姿态，速度，零偏
     for (int i = 0; i < WINDOW_SIZE + 1; i++)
     {
+        //由于姿态不满足正常加法，即李群上不满足加法，因此要特殊定义其加法
         ceres::LocalParameterization *local_parameterization = new PoseLocalParameterization();
         problem.AddParameterBlock(para_Pose[i], SIZE_POSE, local_parameterization);
         problem.AddParameterBlock(para_SpeedBias[i], SIZE_SPEEDBIAS);
     }
+    //参数块 2：相机imu间外参
     for (int i = 0; i < NUM_OF_CAM; i++)
     {
         ceres::LocalParameterization *local_parameterization = new PoseLocalParameterization();
@@ -777,20 +812,24 @@ void Estimator::optimization()
         if (!ESTIMATE_EXTRINSIC)
         {
             ROS_DEBUG("fix extinsic param");
+            //如果不需要优化外参，就设置为fix
             problem.SetParameterBlockConstant(para_Ex_Pose[i]);
         }
         else
             ROS_DEBUG("estimate extinsic param");
     }
+    //参数块 3：传感器时间同步
     if (ESTIMATE_TD)
     {
         problem.AddParameterBlock(para_Td[0], 1);
         //problem.SetParameterBlockConstant(para_Td[0]);
     }
-
+    //实际上还有地图点，其实平凡的参数块不需要调用AddParameterBlock，增加残差接口的时候会自动绑定
     TicToc t_whole, t_prepare;
+    //eigen->double
     vector2double();
-
+    //Step 2 通过残差约束来添加残差块，类似g2o的边
+    //上一次边缘化结果作为本次的先验
     if (last_marginalization_info)
     {
         // construct new marginlization_factor
@@ -798,10 +837,11 @@ void Estimator::optimization()
         problem.AddResidualBlock(marginalization_factor, NULL,
                                  last_marginalization_parameter_blocks);
     }
-
+    ///imu预积分约束
     for (int i = 0; i < WINDOW_SIZE; i++)
     {
         int j = i + 1;
+        //时间过长这个约束就不可信了
         if (pre_integrations[j]->sum_dt > 10.0)
             continue;
         IMUFactor* imu_factor = new IMUFactor(pre_integrations[j]);
@@ -809,26 +849,29 @@ void Estimator::optimization()
     }
     int f_m_cnt = 0;
     int feature_index = -1;
+    ///视觉重投影约束
+    //遍历每一个特征点
     for (auto &it_per_id : f_manager.feature)
     {
         it_per_id.used_num = it_per_id.feature_per_frame.size();
         if (!(it_per_id.used_num >= 2 && it_per_id.start_frame < WINDOW_SIZE - 2))
-            continue;
+            continue;//必须满足出现两次并且在倒数第二帧之前出现过
  
-        ++feature_index;
+        ++feature_index;//统计有效特征点数量
 
         int imu_i = it_per_id.start_frame, imu_j = imu_i - 1;
         
-        Vector3d pts_i = it_per_id.feature_per_frame[0].point;
+        Vector3d pts_i = it_per_id.feature_per_frame[0].point;//第i帧归一化相机坐标
 
         for (auto &it_per_frame : it_per_id.feature_per_frame)
-        {
+        {//遍历当前特征在每一帧中的信息
             imu_j++;
             if (imu_i == imu_j)
             {
                 continue;
             }
-            Vector3d pts_j = it_per_frame.point;
+            Vector3d pts_j = it_per_frame.point;//得到第二个特征点坐标
+            //带有时间延迟的一种形式，并没有走这个，但不小心//llh注释到这里了
             if (ESTIMATE_TD)
             {
                     ProjectionTdFactor *f_td = new ProjectionTdFactor(pts_i, pts_j, it_per_id.feature_per_frame[0].velocity, it_per_frame.velocity,
@@ -847,7 +890,8 @@ void Estimator::optimization()
             }
             else
             {
-                ProjectionFactor *f = new ProjectionFactor(pts_i, pts_j);
+                ProjectionFactor *f = new ProjectionFactor(pts_i, pts_j);//传入参数即同一3D点在两帧中的位姿
+                //约束的变量是观测到该点的第一帧以及某一帧，以及外参和特征点深度
                 problem.AddResidualBlock(f, loss_function, para_Pose[imu_i], para_Pose[imu_j], para_Ex_Pose[0], para_Feature[feature_index]);
             }
             f_m_cnt++;
@@ -856,29 +900,33 @@ void Estimator::optimization()
 
     ROS_DEBUG("visual measurement count: %d", f_m_cnt);
     ROS_DEBUG("prepare for ceres: %f", t_prepare.toc());
-
+    //回环检测的相关约束
     if(relocalization_info)
     {
         //printf("set relocalization factor! \n");
         ceres::LocalParameterization *local_parameterization = new PoseLocalParameterization();
-        problem.AddParameterBlock(relo_Pose, SIZE_POSE, local_parameterization);
+        problem.AddParameterBlock(relo_Pose, SIZE_POSE, local_parameterization);//需要优化的回环帧位姿
         int retrive_feature_index = 0;
         int feature_index = -1;
+        //遍历现有地图点
         for (auto &it_per_id : f_manager.feature)
         {
             it_per_id.used_num = it_per_id.feature_per_frame.size();
             if (!(it_per_id.used_num >= 2 && it_per_id.start_frame < WINDOW_SIZE - 2))
                 continue;
             ++feature_index;
-            int start = it_per_id.start_frame;
-            if(start <= relo_frame_local_index)
-            {   
+            int start = it_per_id.start_frame;//起始帧id
+            if(start <= relo_frame_local_index)//这个地图点能被对应的当前帧看到
+            {
+                //寻找回环帧能看到的地图点
                 while((int)match_points[retrive_feature_index].z() < it_per_id.feature_id)
                 {
                     retrive_feature_index++;
                 }
+                //这个地图点也能被回环帧看到
                 if((int)match_points[retrive_feature_index].z() == it_per_id.feature_id)
                 {
+                    //构造重投影约束，该地图点起始帧和回环帧之间
                     Vector3d pts_j = Vector3d(match_points[retrive_feature_index].x(), match_points[retrive_feature_index].y(), 1.0);
                     Vector3d pts_i = it_per_id.feature_per_frame[0].point;
                     
@@ -890,43 +938,54 @@ void Estimator::optimization()
         }
 
     }
-
+    //Step 3 ceres优化求解
     ceres::Solver::Options options;
 
     options.linear_solver_type = ceres::DENSE_SCHUR;
     //options.num_threads = 2;
-    options.trust_region_strategy_type = ceres::DOGLEG;
+    options.trust_region_strategy_type = ceres::DOGLEG;//这里可以用LM
     options.max_num_iterations = NUM_ITERATIONS;
     //options.use_explicit_schur_complement = true;
     //options.minimizer_progress_to_stdout = true;
     //options.use_nonmonotonic_steps = true;
     if (marginalization_flag == MARGIN_OLD)
-        options.max_solver_time_in_seconds = SOLVER_TIME * 4.0 / 5.0;
+        options.max_solver_time_in_seconds = SOLVER_TIME * 4.0 / 5.0;//如果是边缘化老帧，操作较多，给的优化时间就短一些//?
     else
         options.max_solver_time_in_seconds = SOLVER_TIME;
     TicToc t_solver;
     ceres::Solver::Summary summary;
-    ceres::Solve(options, &problem, &summary);
+    ceres::Solve(options, &problem, &summary);//执行优化之后，优化的变量还在double数组中
     //cout << summary.BriefReport() << endl;
     ROS_DEBUG("Iterations : %d", static_cast<int>(summary.iterations.size()));
     ROS_DEBUG("solver costs: %f", t_solver.toc());
-
+    //double->Eigen 优化结果保存到Eigen等变量中
     double2vector();
-
+    //Step 4 边缘化
     TicToc t_whole_marginalization;
+    //分为两种情况，边缘化最老的帧还是次新帧
     if (marginalization_flag == MARGIN_OLD)
     {
+        //一个用来边缘化操作的对象
         MarginalizationInfo *marginalization_info = new MarginalizationInfo();
+        //类似于手写高斯牛顿，将变量转化为double数组
         vector2double();
-
+        //关于边缘化有几点注意：
+        //1.找到需要边缘化的参数块，这里是第0帧位姿、速度、零偏，地图点
+        //2.找到构造高斯牛顿下降时跟这些待边缘化相关的参数块有关的残差约束，即预积分约束，重投影约束，以及上一次边缘化约束
+        //3.这些约束连接的参数块中，不需要被边缘化的参数块，就是被提供先验约束的部分，也就是滑窗中剩下的位姿和速度零偏
+        
+        //上一次边缘化结果
+        // 先验误差会一直保存，而不是只使用一次
+        // 如果上一次边缘化的信息存在
+        // 要边缘化的参数块是 para_Pose[0] para_SpeedBias[0] 以及 para_Feature[feature_index](滑窗内的第feature_index个点的逆深度)
         if (last_marginalization_info)
         {
             vector<int> drop_set;
             for (int i = 0; i < static_cast<int>(last_marginalization_parameter_blocks.size()); i++)
-            {
+            {//查询last_marginalization_parameter_blocks中是首帧状态量的序号
                 if (last_marginalization_parameter_blocks[i] == para_Pose[0] ||
                     last_marginalization_parameter_blocks[i] == para_SpeedBias[0])
-                    drop_set.push_back(i);
+                    drop_set.push_back(i);//用drop_set把最老帧的先验信息干掉了
             }
             // construct new marginlization_factor
             MarginalizationFactor *marginalization_factor = new MarginalizationFactor(last_marginalization_info);
@@ -936,34 +995,38 @@ void Estimator::optimization()
 
             marginalization_info->addResidualBlockInfo(residual_block_info);
         }
-
+        //只有第1个预积分和待边缘化参数块相连
+        ///把要margin的IMU信息加进来
         {
             if (pre_integrations[1]->sum_dt < 10.0)
             {
-                IMUFactor* imu_factor = new IMUFactor(pre_integrations[1]);
+                //和构建ceres问题一样，也要计算残差和雅克比
+                IMUFactor* imu_factor = new IMUFactor(pre_integrations[1]);//这里的1是指第0帧（最老的帧）和第1帧的约束
                 ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(imu_factor, NULL,
                                                                            vector<double *>{para_Pose[0], para_SpeedBias[0], para_Pose[1], para_SpeedBias[1]},
-                                                                           vector<int>{0, 1});
+                                                                           vector<int>{0, 1});//这里的0和1表示索引为0和1的参数块要被边缘化掉
                 marginalization_info->addResidualBlockInfo(residual_block_info);
             }
         }
-
-        {
+        //把要margin的视觉信息加进来
+        {//添加视觉的先验，只添加起始帧是旧帧且观测次数大于2的Features
             int feature_index = -1;
+            //遍历特征点
             for (auto &it_per_id : f_manager.feature)
             {
-                it_per_id.used_num = it_per_id.feature_per_frame.size();
+                it_per_id.used_num = it_per_id.feature_per_frame.size();//该特征点被观测到的次数
                 if (!(it_per_id.used_num >= 2 && it_per_id.start_frame < WINDOW_SIZE - 2))
-                    continue;
+                    continue;//Feature的观测次数不小于2次，且起始帧不属于最后两帧
 
                 ++feature_index;
 
                 int imu_i = it_per_id.start_frame, imu_j = imu_i - 1;
+                //保留起始自当前滑窗第0帧的特征点
                 if (imu_i != 0)
                     continue;
-
+                //得到该Feature在起始下的归一化坐标
                 Vector3d pts_i = it_per_id.feature_per_frame[0].point;
-
+                //遍历观测到该特征点的其他KF，建立约束
                 for (auto &it_per_frame : it_per_id.feature_per_frame)
                 {
                     imu_j++;
@@ -971,6 +1034,7 @@ void Estimator::optimization()
                         continue;
 
                     Vector3d pts_j = it_per_frame.point;
+                    //根据是否约束延时确定残差帧
                     if (ESTIMATE_TD)
                     {
                         ProjectionTdFactor *f_td = new ProjectionTdFactor(pts_i, pts_j, it_per_id.feature_per_frame[0].velocity, it_per_frame.velocity,
@@ -986,7 +1050,7 @@ void Estimator::optimization()
                         ProjectionFactor *f = new ProjectionFactor(pts_i, pts_j);
                         ResidualBlockInfo *residual_block_info = new ResidualBlockInfo(f, loss_function,
                                                                                        vector<double *>{para_Pose[imu_i], para_Pose[imu_j], para_Ex_Pose[0], para_Feature[feature_index]},
-                                                                                       vector<int>{0, 3});
+                                                                                       vector<int>{0, 3});//第0帧和3D点被margin
                         marginalization_info->addResidualBlockInfo(residual_block_info);
                     }
                 }
@@ -994,10 +1058,14 @@ void Estimator::optimization()
         }
 
         TicToc t_pre_margin;
+        //Step 将三个ResidualBlockInfo中的参数块综合到marginalization_info中
+        //其中，计算所有ResidualBlock(残差项)的残差和雅克比,parameter_block_data是参数块的容器。
+        ///边缘化预处理
         marginalization_info->preMarginalize();
         ROS_DEBUG("pre marginalization %f ms", t_pre_margin.toc());
         
         TicToc t_margin;
+        ///边缘化操作
         marginalization_info->marginalize();
         ROS_DEBUG("marginalization %f ms", t_margin.toc());
 
@@ -1215,7 +1283,15 @@ void Estimator::slideWindowOld()
     else
         f_manager.removeBack();
 }
-
+/**
+ * @brief 接收回环帧的消息
+ * 
+ * @param _frame_stamp 
+ * @param _frame_index 
+ * @param _match_points 
+ * @param _relo_t 
+ * @param _relo_r 
+ */
 void Estimator::setReloFrame(double _frame_stamp, int _frame_index, vector<Vector3d> &_match_points, Vector3d _relo_t, Matrix3d _relo_r)
 {
     relo_frame_stamp = _frame_stamp;
@@ -1224,14 +1300,15 @@ void Estimator::setReloFrame(double _frame_stamp, int _frame_index, vector<Vecto
     match_points = _match_points;
     prev_relo_t = _relo_t;
     prev_relo_r = _relo_r;
+    //在滑窗中寻找当前帧，因为VIO送个回环节点的是倒数第三帧，因此很有可能该帧还在滑窗内
     for(int i = 0; i < WINDOW_SIZE; i++)
     {
         if(relo_frame_stamp == Headers[i].stamp.toSec())
         {
-            relo_frame_local_index = i;
-            relocalization_info = 1;
+            relo_frame_local_index = i;//对应滑窗中的第i帧
+            relocalization_info = 1;    //这是一个有效的回环信息
             for (int j = 0; j < SIZE_POSE; j++)
-                relo_Pose[j] = para_Pose[i][j];
+                relo_Pose[j] = para_Pose[i][j];//借助VIO优化回环帧位姿，初值先设为当前帧位姿
         }
     }
 }

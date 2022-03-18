@@ -1,5 +1,13 @@
 #include "pose_local_parameterization.h"
-
+/**
+ * @brief 定义位姿加法的定义
+ * 
+ * @param x 原先的x
+ * @param delta 变化量
+ * @param x_plus_delta 原先的x加上变化量之后的值 
+ * @return true 
+ * @return false 
+ */
 bool PoseLocalParameterization::Plus(const double *x, const double *delta, double *x_plus_delta) const
 {
     Eigen::Map<const Eigen::Vector3d> _p(x);

@@ -90,10 +90,10 @@ public:
 	vector<cv::Point2f> point_2d_norm;
 	vector<double> point_id;
 	vector<cv::KeyPoint> keypoints;
-	vector<cv::KeyPoint> keypoints_norm;
+	vector<cv::KeyPoint> keypoints_norm;//保存新提取的归一化相机坐标系坐标
 	vector<cv::KeyPoint> window_keypoints;
 	vector<BRIEF::bitset> brief_descriptors;
-	vector<BRIEF::bitset> window_brief_descriptors;
+	vector<BRIEF::bitset> window_brief_descriptors;//保存计算的特征点描述子
 	bool has_fast_point;
 	int sequence;
 

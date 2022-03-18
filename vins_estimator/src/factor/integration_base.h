@@ -189,7 +189,21 @@ class IntegrationBase
         gyr_0 = gyr_1;  
      
     }
-
+    /**
+     * @brief 定义残差计算方式，对应论文中公式16
+     * 
+     * @param Pi 
+     * @param Qi 
+     * @param Vi 
+     * @param Bai 
+     * @param Bgi 
+     * @param Pj 
+     * @param Qj 
+     * @param Vj 
+     * @param Baj 
+     * @param Bgj 
+     * @return Eigen::Matrix<double, 15, 1> 
+     */
     Eigen::Matrix<double, 15, 1> evaluate(const Eigen::Vector3d &Pi, const Eigen::Quaterniond &Qi, const Eigen::Vector3d &Vi, const Eigen::Vector3d &Bai, const Eigen::Vector3d &Bgi,
                                           const Eigen::Vector3d &Pj, const Eigen::Quaterniond &Qj, const Eigen::Vector3d &Vj, const Eigen::Vector3d &Baj, const Eigen::Vector3d &Bgj)
     {
@@ -206,6 +220,7 @@ class IntegrationBase
         Eigen::Vector3d dba = Bai - linearized_ba;
         Eigen::Vector3d dbg = Bgi - linearized_bg;
 
+        //通过残差雅克比更新，也就是论文里那个一阶近似更新预积分量的方法
         Eigen::Quaterniond corrected_delta_q = delta_q * Utility::deltaQ(dq_dbg * dbg);
         Eigen::Vector3d corrected_delta_v = delta_v + dv_dba * dba + dv_dbg * dbg;
         Eigen::Vector3d corrected_delta_p = delta_p + dp_dba * dba + dp_dbg * dbg;

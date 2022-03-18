@@ -30,10 +30,19 @@ ProjectionTdFactor::ProjectionTdFactor(const Eigen::Vector3d &_pts_i, const Eige
     tangent_base.block<1, 3>(1, 0) = b2.transpose();
 #endif
 };
-
+/**
+ * @brief 建立重投影误差重载的evaluate函数
+ * 
+ * @param parameters 
+ * @param residuals 
+ * @param jacobians 
+ * @return true 
+ * @return false 
+ */
 bool ProjectionTdFactor::Evaluate(double const *const *parameters, double *residuals, double **jacobians) const
 {
     TicToc tic_toc;
+    //赋值待优化变量：ij两帧的位置姿态 imu到camera的外参 第i帧下的3D点逆深度 传感器时延
     Eigen::Vector3d Pi(parameters[0][0], parameters[0][1], parameters[0][2]);
     Eigen::Quaterniond Qi(parameters[0][6], parameters[0][3], parameters[0][4], parameters[0][5]);
 
@@ -46,32 +55,37 @@ bool ProjectionTdFactor::Evaluate(double const *const *parameters, double *resid
     double inv_dep_i = parameters[3][0];
 
     double td = parameters[4][0];
-
+    //利用传感器时延恢复了一下
     Eigen::Vector3d pts_i_td, pts_j_td;
     pts_i_td = pts_i - (td - td_i + TR / ROW * row_i) * velocity_i;
     pts_j_td = pts_j - (td - td_j + TR / ROW * row_j) * velocity_j;
+    //恢复地图点在第i帧相机坐标系下坐标
     Eigen::Vector3d pts_camera_i = pts_i_td / inv_dep_i;
+    //转移到第i帧的imu坐标系
     Eigen::Vector3d pts_imu_i = qic * pts_camera_i + tic;
+    //转移到世界坐标系
     Eigen::Vector3d pts_w = Qi * pts_imu_i + Pi;
+    //转移到第j帧的imu坐标系
     Eigen::Vector3d pts_imu_j = Qj.inverse() * (pts_w - Pj);
+    //转移到第j帧相机坐标系
     Eigen::Vector3d pts_camera_j = qic.inverse() * (pts_imu_j - tic);
     Eigen::Map<Eigen::Vector2d> residual(residuals);
 
-#ifdef UNIT_SPHERE_ERROR 
+#ifdef UNIT_SPHERE_ERROR //是否使用球面宏（参考论文）
     residual =  tangent_base * (pts_camera_j.normalized() - pts_j_td.normalized());
 #else
-    double dep_j = pts_camera_j.z();
-    residual = (pts_camera_j / dep_j).head<2>() - pts_j_td.head<2>();
+    double dep_j = pts_camera_j.z();//第j帧下投影点深度
+    residual = (pts_camera_j / dep_j).head<2>() - pts_j_td.head<2>();///残差
 #endif
 
-    residual = sqrt_info * residual;
+    residual = sqrt_info * residual;//误差乘上信息矩阵
 
     if (jacobians)
     {
         Eigen::Matrix3d Ri = Qi.toRotationMatrix();
         Eigen::Matrix3d Rj = Qj.toRotationMatrix();
         Eigen::Matrix3d ric = qic.toRotationMatrix();
-        Eigen::Matrix<double, 2, 3> reduce(2, 3);
+        Eigen::Matrix<double, 2, 3> reduce(2, 3);//链式求导中残差对于Pj的导数
 #ifdef UNIT_SPHERE_ERROR
         double norm = pts_camera_j.norm();
         Eigen::Matrix3d norm_jaco;
@@ -88,7 +102,7 @@ bool ProjectionTdFactor::Evaluate(double const *const *parameters, double *resid
             0, 1. / dep_j, -pts_camera_j(1) / (dep_j * dep_j);
 #endif
         reduce = sqrt_info * reduce;
-
+        //后面是链式求导中Pj对于各个误差项的导数
         if (jacobians[0])
         {
             Eigen::Map<Eigen::Matrix<double, 2, 7, Eigen::RowMajor>> jacobian_pose_i(jacobians[0]);
@@ -99,7 +113,7 @@ bool ProjectionTdFactor::Evaluate(double const *const *parameters, double *resid
 
             jacobian_pose_i.leftCols<6>() = reduce * jaco_i;
             jacobian_pose_i.rightCols<1>().setZero();
-        }
+        } 
 
         if (jacobians[1])
         {

@@ -106,17 +106,19 @@ class Estimator
     double initial_timestamp;
 
 
-    double para_Pose[WINDOW_SIZE + 1][SIZE_POSE];
-    double para_SpeedBias[WINDOW_SIZE + 1][SIZE_SPEEDBIAS];
-    double para_Feature[NUM_OF_F][SIZE_FEATURE];
-    double para_Ex_Pose[NUM_OF_CAM][SIZE_POSE];
+    double para_Pose[WINDOW_SIZE + 1][SIZE_POSE];//位姿参数块（位置3+姿态四元数4=7）
+    double para_SpeedBias[WINDOW_SIZE + 1][SIZE_SPEEDBIAS];//速度以及零偏参数块
+    double para_Feature[NUM_OF_F][SIZE_FEATURE];//特征点维护逆深度，维度为1
+    double para_Ex_Pose[NUM_OF_CAM][SIZE_POSE];//外参（类似位姿）
     double para_Retrive_Pose[SIZE_POSE];
-    double para_Td[1][1];
+    double para_Td[1][1];//时间戳校正
     double para_Tr[1][1];
 
     int loop_window_index;
 
+    //重要的先验信息类对象
     MarginalizationInfo *last_marginalization_info;
+    //先验矩阵对应的状态量X
     vector<double *> last_marginalization_parameter_blocks;
 
     map<double, ImageFrame> all_image_frame;

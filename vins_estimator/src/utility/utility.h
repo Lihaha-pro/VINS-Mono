@@ -27,7 +27,13 @@ class Utility
         dq.z() = half_theta.z();
         return dq;
     }
-
+    /**
+     * @brief 将输入参数q转化为反对称矩阵
+     * 
+     * @tparam Derived 
+     * @param q 
+     * @return Eigen::Matrix<typename Derived::Scalar, 3, 3> 
+     */
     template <typename Derived>
     static Eigen::Matrix<typename Derived::Scalar, 3, 3> skewSymmetric(const Eigen::MatrixBase<Derived> &q)
     {
